@@ -15,7 +15,7 @@ class Scene(BaseModel):
     )
     visual_prompt: str = Field(description="Deskripsi visual adegan aksi nyata 9:16")
     stock_keywords: list[str] = Field(
-        description="Daftar 3-5 variasi keyword bahasa Inggris yang sinkron dengan judul konten dan aksi manusia nyata (contoh: ['worried man checking phone screen', 'counting cash money rupiah', 'typing laptop frustrated night', 'person budgeting with calculator'])."
+        description="Daftar 3-5 variasi keyword bahasa Inggris yang sinkron dengan judul konten dan aksi manusia nyata (contoh: ['worried man checking phone screen', 'counting cash money rupiah', 'typing laptop night'])."
     )
     text_overlay: str = Field(
         description="Punchline teks kapital maksimal 3-4 kata (contoh: '1. STOP PINJOL', '2. AUTO DEBET')"
@@ -31,6 +31,13 @@ class VideoProject(BaseModel):
     project_title: str
     metadata: VideoMetadata
     scenes: list[Scene]
+
+class TopicItem(BaseModel):
+    niche: str = Field(description="Niche bahasan (contoh: Finansial, Karir, Psikologi, AI & Tools, Bisnis)")
+    title: str = Field(description="Judul konten TikTok yang sangat menarik dan viral")
+
+class BulkTopics(BaseModel):
+    topics: list[TopicItem]
 
 def _clean_json_string(raw_text: str) -> str:
     cleaned = re.sub(r"^```(?:json)?\s*", "", raw_text.strip(), flags=re.IGNORECASE)
@@ -54,11 +61,9 @@ def _call_search_grounding(client: genai.Client, model: str, prompt: str, max_re
                 return text_res
         except Exception as e:
             if "429" in str(e):
-                print(f"⏳ Rate limit grounding. Tunggu {delay} detik...")
                 time.sleep(delay)
                 delay *= 2
             else:
-                print(f"⚠️ Search grounding dialihkan: {e}")
                 break
     return ""
 
@@ -70,7 +75,6 @@ def generate_trending_script(niche: str, specific_title: Optional[str] = None) -
     client = genai.Client(api_key=api_key)
     TARGET_MODEL = "gemini-3.6-flash"
 
-    # Ambil riwayat agar topik tidak berulang
     past_topics = get_recent_topics(niche)
     blacklist_instruction = ""
     if past_topics:
@@ -91,7 +95,6 @@ def generate_trending_script(niche: str, specific_title: Optional[str] = None) -
 
     time.sleep(2)
 
-    print("📝 [2/2] Memformat naskah JSON (Target: Durasi Minimal 60 Detik)...")
     formatting_prompt = f"""
     Referensi Riset:
     {researched_info[:1500]}
@@ -127,10 +130,45 @@ def generate_trending_script(niche: str, specific_title: Optional[str] = None) -
         proj = parsed_obj if isinstance(parsed_obj, VideoProject) else VideoProject.model_validate(parsed_obj)
     else:
         raw_text = getattr(response, "text", None)
-        if not raw_text:
-            raise ValueError("Model tidak mengembalikan respon teks.")
         proj = VideoProject.model_validate_json(_clean_json_string(raw_text))
 
-    # Simpan riwayat ke database
     save_topic("education", niche, proj.metadata.source_topic)
     return proj
+
+def generate_10_bulk_topics() -> list[TopicItem]:
+    """Menghasilkan 10 ide topik acak lintas niche yang sedang tren dan anti-duplikasi."""
+    api_key = os.environ.get("GEMINI_API_KEY")
+    client = genai.Client(api_key=api_key)
+    TARGET_MODEL = "gemini-3.6-flash"
+
+    past_topics = get_recent_topics("all", limit=40)
+    blacklist = "\n- ".join(past_topics) if past_topics else "Belum ada"
+
+    prompt = f"""
+    Riset 10 topik video TikTok edukasi/informasi yang sangat berpotensi FYP di Indonesia saat ini.
+    Kombinasikan dari beragam niche populer: Finansial Pribadi, Psikologi & Mindset, Tips Karir/Kerja, AI & Tools Produktivitas, dan Bisnis/Side Hustle.
+    
+    DAFTAR TOPIK YANG SUDAH PERNAH DIBUAT (DILARANG MENGULANG):
+    - {blacklist}
+
+    Hasilkan tepat 10 judul yang memicu rasa penasaran, relevan dengan kehidupan anak muda Indonesia, dan praktis.
+    """
+
+    response = client.models.generate_content(
+        model=TARGET_MODEL,
+        contents=prompt,
+        config=types.GenerateContentConfig(
+            response_mime_type="application/json",
+            response_schema=BulkTopics,
+            temperature=0.8,
+            system_instruction="Anda adalah creative director media sosial nomor satu."
+        )
+    )
+
+    parsed_obj = getattr(response, "parsed", None)
+    if parsed_obj is not None:
+        data = parsed_obj if isinstance(parsed_obj, BulkTopics) else BulkTopics.model_validate(parsed_obj)
+    else:
+        data = BulkTopics.model_validate_json(_clean_json_string(getattr(response, "text", "{}")))
+
+    return data.topics[:10]
