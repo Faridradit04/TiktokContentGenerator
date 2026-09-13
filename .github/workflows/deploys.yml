@@ -3,7 +3,7 @@ name: Auto Deploy to VPS
 on:
   push:
     branches:
-      - main
+      - master
 
 jobs:
   deploy:
@@ -18,7 +18,7 @@ jobs:
           port: 22
           script: |
             cd /root/tiktok-bot
-            git pull origin main
+            git pull origin master
             source venv/bin/activate
             pip install -r requirements.txt --quiet
             sudo systemctl restart tiktok-bot
