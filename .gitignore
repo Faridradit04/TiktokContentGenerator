@@ -1,0 +1,12 @@
+.env
+token.json
+credentials.json
+venv/
+__pycache__/
+*.pyc
+assets/output/*
+assets/raw_clips/*
+assets/audio/*
+assets/uploads/*
+assets/history.db
+!assets/bgm/

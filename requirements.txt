@@ -1,0 +1,11 @@
+google-genai
+pydantic
+edge-tts
+mutagen
+requests
+moviepy==1.0.3
+python-dotenv
+google-auth
+google-auth-oauthlib
+google-auth-httplib2
+google-api-python-client

@@ -1,0 +1,24 @@
+name: Auto Deploy to VPS
+
+on:
+  push:
+    branches:
+      - main
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Deploy via SSH to VPS
+        uses: appleboy/ssh-action@v1.0.3
+        with:
+          host: ${{ secrets.HOST }}
+          username: ${{ secrets.USERNAME }}
+          key: ${{ secrets.SSH_KEY }}
+          port: 22
+          script: |
+            cd /root/tiktok-bot
+            git pull origin main
+            source venv/bin/activate
+            pip install -r requirements.txt --quiet
+            sudo systemctl restart tiktok-bot
