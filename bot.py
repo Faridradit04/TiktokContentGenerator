@@ -43,6 +43,40 @@ EDU_NICHE, EDU_TITLE, AFF_MEDIA, AFF_DESC = range(4)
 def is_owner(update: Update) -> bool:
     return update.effective_user.id == ALLOWED_USER_ID
 
+def make_progress_card(step_num: int, title: str, detail: str) -> str:
+    """Format tampilan bilah progres dinamis di Telegram."""
+    total_steps = 5
+    pct = int((step_num / total_steps) * 100)
+    filled = int(step_num * 2)
+    bar = "🟩" * filled + "⬜" * (10 - filled)
+
+    steps_desc = [
+        ("1", "Riset Tren & Naskah JSON"),
+        ("2", "Sintesis Suara Narasi (Edge-TTS)"),
+        ("3", "Kurasi Klip Vertikal HD (Pexels)"),
+        ("4", "Perakitan & Render Video (MoviePy)"),
+        ("5", "Upload Berkas ke Google Drive"),
+    ]
+
+    lines = ["⚡ *PROGRESS STUDIO KONTEN AI* ⚡\n"]
+    if title:
+        lines.append(f"📌 *Topik:* `{title}`")
+    lines.append(f"📊 *Progres:* `[{bar}]` *{pct}%*\n")
+    lines.append("📍 *Status Alur Produksi:*")
+
+    for num_str, name in steps_desc:
+        idx = int(num_str)
+        if idx < step_num:
+            lines.append(f"  ✅ `[{num_str}/5]` {name}")
+        elif idx == step_num:
+            lines.append(f"  🔄 `[{num_str}/5]` *{name}* 👈")
+            if detail:
+                lines.append(f"      └─ 💬 _{detail}_")
+        else:
+            lines.append(f"  ⏳ `[{num_str}/5]` {name}")
+
+    return "\n".join(lines)
+
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not is_owner(update):
         await update.message.reply_text("⛔ Akses ditolak.")
@@ -83,11 +117,9 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return AFF_MEDIA
 
     elif query.data == "menu_bulk10":
-        # Jalankan eksekusi 10 video secara asynchronous
         asyncio.create_task(run_pipeline_bulk_10(query.message, context))
         return ConversationHandler.END
 
-# --- Handler Percakapan Edukasi ---
 async def receive_edu_niche(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data["edu_niche"] = update.message.text.strip()
     await update.message.reply_text(
@@ -108,7 +140,6 @@ async def receive_edu_title_and_run(update: Update, context: ContextTypes.DEFAUL
     asyncio.create_task(execute_single_video(status_msg, niche=niche, specific_title=title_text))
     return ConversationHandler.END
 
-# --- Handler Percakapan Affiliate ---
 async def receive_affiliate_media(update: Update, context: ContextTypes.DEFAULT_TYPE):
     file_id = None
     file_ext = ".jpg"
@@ -147,28 +178,40 @@ async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("❌ Proses dibatalkan.")
     return ConversationHandler.END
 
-# --- Engine Pemrosesan Tunggal Edukasi ---
 async def execute_single_video(status_msg, niche: str, specific_title: str = None) -> bool:
     created_temp_files = []
+    topic_display = specific_title if specific_title else f"Niche: {niche}"
     try:
-        await status_msg.edit_text(f"🔍 [1/5] Meriset & menyusun naskah ({niche})...")
+        await status_msg.edit_text(
+            make_progress_card(1, topic_display, f"Menelusuri materi viral niche {niche}..."),
+            parse_mode="Markdown"
+        )
         script_data = generate_trending_script(niche=niche, specific_title=specific_title)
         topic_title = script_data.metadata.source_topic
         slug = slugify_filename(topic_title)
 
-        await status_msg.edit_text(f"🎙️ [2/5] Merekam voice-over: *{topic_title}*...", parse_mode="Markdown")
+        await status_msg.edit_text(
+            make_progress_card(2, topic_title, "Membuat file audio narasi per adegan..."),
+            parse_mode="Markdown"
+        )
         scenes_audio = await process_json_to_audio(script_data.model_dump(), str(AUDIO_DIR))
         for sc in scenes_audio:
             if sc.get("audio_path"):
                 created_temp_files.append(sc["audio_path"])
 
-        await status_msg.edit_text("🎬 [3/5] Mengunduh B-roll Pexels HD...", parse_mode="Markdown")
+        await status_msg.edit_text(
+            make_progress_card(3, topic_title, f"Mengunduh {len(scenes_audio)} b-roll vertikal 9:16..."),
+            parse_mode="Markdown"
+        )
         scenes_ready = fetch_broll_clips(scenes_audio, str(RAW_CLIPS_DIR))
         for sc in scenes_ready:
             if sc.get("video_path") and sc["video_path"] not in created_temp_files:
                 created_temp_files.append(sc["video_path"])
 
-        await status_msg.edit_text("🎞️ [4/5] Merender video 9:16 durasi 60+ detik...", parse_mode="Markdown")
+        await status_msg.edit_text(
+            make_progress_card(4, topic_title, "Menggabungkan klip, subtitle, zoom dinamis, dan BGM..."),
+            parse_mode="Markdown"
+        )
         out_video = OUTPUT_DIR / f"{slug}.mp4"
         out_cover = OUTPUT_DIR / f"{slug}_cover.jpg"
         out_meta = OUTPUT_DIR / f"{slug}_metadata.txt"
@@ -185,11 +228,12 @@ async def execute_single_video(status_msg, niche: str, specific_title: str = Non
                 str(out_cover)
             )
 
-        # Simpan metadata
         meta_path = save_metadata_file(script_data.metadata, str(out_meta))
 
-        # Upload ke subfolder khusus di Google Drive
-        await status_msg.edit_text("☁️ [5/5] Membuat subfolder & mengunggah ke Google Drive...")
+        await status_msg.edit_text(
+            make_progress_card(5, topic_title, "Menyimpan ke subfolder Google Drive..."),
+            parse_mode="Markdown"
+        )
         folder_drive_name = f"[{niche.upper()}] {topic_title}"
         target_folder_id = create_or_get_drive_folder(folder_drive_name, GDRIVE_FOLDER_ID)
 
@@ -202,30 +246,39 @@ async def execute_single_video(status_msg, niche: str, specific_title: str = Non
             caption_text = f.read()
 
         await status_msg.edit_text(
-            f"✅ *SELESAI!*\n\n"
+            f"🎉 *KONTEN BERHASIL SELESAI!*\n\n"
+            f"📌 *Topik:* `{topic_title}`\n"
             f"📁 *Folder Drive:* `{folder_drive_name}`\n"
-            f"🧹 *Status Disk:* File lokal langsung dibersihkan.\n\n"
-            f"📝 *Metadata:*\n```text\n{caption_text}\n```",
+            f"🧹 *Penyimpanan VPS:* File lokal langsung dibersihkan.\n\n"
+            f"📝 *Metadata & Takarir:*\n```text\n{caption_text}\n```",
             parse_mode="Markdown"
         )
         return True
     except Exception as e:
-        await status_msg.edit_text(f"❌ Terjadi error pada: `{niche}`\nDetail: `{e}`", parse_mode="Markdown")
+        await status_msg.edit_text(
+            f"❌ *Produksi Gagal:* `{topic_display}`\n*Detail Galat:* `{e}`",
+            parse_mode="Markdown"
+        )
         return False
     finally:
-        # Pembersihan berkas lokal agar harddisk laptop/VPS tidak penuh
         cleanup_local_files(created_temp_files)
 
-# --- Engine Pemrosesan Affiliate ---
 async def execute_affiliate_video(status_msg, media_path: str, desc: str):
     created_temp_files = [media_path]
+    topic_display = "Analisis Produk Affiliate"
     try:
-        await status_msg.edit_text("🔍 [1/5] Gemini Vision menganalisis produk...")
+        await status_msg.edit_text(
+            make_progress_card(1, topic_display, "Gemini Vision mengevaluasi visual produk & diskon..."),
+            parse_mode="Markdown"
+        )
         script_data = generate_affiliate_script(media_path, desc)
         topic_title = script_data.metadata.source_topic
         slug = slugify_filename(topic_title)
 
-        await status_msg.edit_text(f"🎙️ [2/5] Membuat narasi: *{topic_title}*...", parse_mode="Markdown")
+        await status_msg.edit_text(
+            make_progress_card(2, topic_title, "Membuat narasi suara promosi terstruktur..."),
+            parse_mode="Markdown"
+        )
         scenes_audio = await process_json_to_audio(script_data.model_dump(), str(AUDIO_DIR))
         for sc in scenes_audio:
             if sc.get("audio_path"):
@@ -235,13 +288,19 @@ async def execute_affiliate_video(status_msg, media_path: str, desc: str):
             if sc.get("visual_source") == "product_asset":
                 sc["video_path"] = media_path
 
-        await status_msg.edit_text("🎬 [3/5] Mengunduh b-roll pelengkap Pexels...", parse_mode="Markdown")
+        await status_msg.edit_text(
+            make_progress_card(3, topic_title, "Mengunduh B-roll aksi pendukung dari Pexels..."),
+            parse_mode="Markdown"
+        )
         scenes_ready = fetch_broll_clips(scenes_audio, str(RAW_CLIPS_DIR))
         for sc in scenes_ready:
             if sc.get("video_path") and sc["video_path"] not in created_temp_files:
                 created_temp_files.append(sc["video_path"])
 
-        await status_msg.edit_text("🎞️ [4/5] Merender video affiliate 60+ detik...", parse_mode="Markdown")
+        await status_msg.edit_text(
+            make_progress_card(4, topic_title, "Merakit video vertikal 9:16 dan penawaran..."),
+            parse_mode="Markdown"
+        )
         out_video = OUTPUT_DIR / f"{slug}.mp4"
         out_cover = OUTPUT_DIR / f"{slug}_cover.jpg"
         out_meta = OUTPUT_DIR / f"{slug}_metadata.txt"
@@ -259,7 +318,10 @@ async def execute_affiliate_video(status_msg, media_path: str, desc: str):
 
         meta_path = save_metadata_file(script_data.metadata, str(out_meta))
 
-        await status_msg.edit_text("☁️ [5/5] Membuat folder & mengunggah ke Google Drive...")
+        await status_msg.edit_text(
+            make_progress_card(5, topic_title, "Mengunggah paket video promosi ke Google Drive..."),
+            parse_mode="Markdown"
+        )
         folder_drive_name = f"[AFFILIATE] {topic_title}"
         target_folder_id = create_or_get_drive_folder(folder_drive_name, GDRIVE_FOLDER_ID)
 
@@ -272,17 +334,18 @@ async def execute_affiliate_video(status_msg, media_path: str, desc: str):
             caption_text = f.read()
 
         await status_msg.edit_text(
-            f"✅ *PRODUK AFFILIATE SELESAI!*\n\n"
-            f"📁 *Folder Drive:* `{folder_drive_name}`\n\n"
-            f"📝 *Caption & Hashtag:*\n```text\n{caption_text}\n```",
+            f"🎉 *KONTEN AFFILIATE SELESAI!*\n\n"
+            f"🛍️ *Produk:* `{topic_title}`\n"
+            f"📁 *Folder Drive:* `{folder_drive_name}`\n"
+            f"🧹 *Penyimpanan VPS:* File sementara telah dibersihkan.\n\n"
+            f"📝 *Takarir Penjualan:*\n```text\n{caption_text}\n```",
             parse_mode="Markdown"
         )
     except Exception as e:
-        await status_msg.edit_text(f"❌ Error affiliate: `{e}`", parse_mode="Markdown")
+        await status_msg.edit_text(f"❌ *Produksi Affiliate Gagal:* `{e}`", parse_mode="Markdown")
     finally:
         cleanup_local_files(created_temp_files)
 
-# --- Engine Pemrosesan Bulk 10 Video Sekaligus ---
 async def run_pipeline_bulk_10(msg, context: ContextTypes.DEFAULT_TYPE):
     status_msg = await msg.reply_text("🤖 [Riset AI] Sedang meriset 10 topik tren acak bebas duplikasi...")
     try:
@@ -290,24 +353,25 @@ async def run_pipeline_bulk_10(msg, context: ContextTypes.DEFAULT_TYPE):
         daftar_text = "\n".join([f"{i+1}. [{t.niche}] {t.title}" for i, t in enumerate(topics_list)])
         await status_msg.edit_text(
             f"📋 *Daftar 10 Topik yang Terpilih:*\n\n{daftar_text}\n\n"
-            "⏳ Memulai proses pembuatan secara otomatis satu per satu...",
+            "⏳ Memulai proses pembuatan secara berurutan...",
             parse_mode="Markdown"
         )
 
         success_count = 0
         for idx, item in enumerate(topics_list):
-            progress_msg = await msg.reply_text(f"⏳ Memproses ({idx+1}/10): *[{item.niche}]* {item.title}...", parse_mode="Markdown")
+            progress_msg = await msg.reply_text(
+                f"⏳ Memproses ({idx+1}/10): *[{item.niche}]* {item.title}...",
+                parse_mode="Markdown"
+            )
             success = await execute_single_video(progress_msg, niche=item.niche, specific_title=item.title)
             if success:
                 success_count += 1
-            # Beri jeda 4 detik antar video untuk menjaga stabilitas API
             await asyncio.sleep(4)
 
         await msg.reply_text(
             f"🎉 *PROSES MASSAL 10 VIDEO SELESAI!*\n\n"
             f"✅ Berhasil diproduksi: *{success_count}/10 video*.\n"
-            f"📁 Masing-masing video sudah rapi di subfoldernya sendiri di Google Drive.\n"
-            f"🧹 Seluruh file sisa di VPS telah dibersihkan secara otomatis.",
+            f"📁 Seluruh berkas telah rapi di Google Drive dan VPS bebas sampah penyimpanan.",
             parse_mode="Markdown"
         )
     except Exception as e:

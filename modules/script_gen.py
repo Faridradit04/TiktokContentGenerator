@@ -44,28 +44,52 @@ def _clean_json_string(raw_text: str) -> str:
     cleaned = re.sub(r"\s*```$", "", cleaned.strip())
     return cleaned.strip()
 
-def _call_search_grounding(client: genai.Client, model: str, prompt: str, max_retries: int = 2) -> str:
-    delay = 3
-    for attempt in range(max_retries):
-        try:
-            response = client.models.generate_content(
-                model=model,
-                contents=prompt,
-                config=types.GenerateContentConfig(
-                    tools=[{"google_search": {}}],
-                    system_instruction="Anda adalah periset tren terpercaya di Indonesia."
-                )
+def _research_topic_with_fallback(client: genai.Client, model: str, prompt: str) -> str:
+    """
+    Mencoba riset via Google Search Grounding terlebih dahulu.
+    Jika error / kuota habis, otomatis fallback ke internal knowledge Gemini.
+    """
+    # 1. Coba via Google Search Grounding
+    try:
+        print("🌐 Mencoba riset via Google Search Grounding...")
+        response = client.models.generate_content(
+            model=model,
+            contents=prompt,
+            config=types.GenerateContentConfig(
+                tools=[{"google_search": {}}],
+                system_instruction="Anda adalah periset tren terpercaya di Indonesia."
             )
-            text_res = getattr(response, "text", "")
-            if text_res:
-                return text_res
-        except Exception as e:
-            if "429" in str(e):
-                time.sleep(delay)
-                delay *= 2
-            else:
-                break
-    return ""
+        )
+        text_res = getattr(response, "text", "")
+        if text_res and text_res.strip():
+            print("✅ Berhasil mendapatkan referensi via Search Grounding.")
+            return text_res
+    except Exception as e:
+        print(f"⚠️ Search Grounding tidak tersedia ({e}). Mengalihkan ke riset internal Gemini...")
+
+    # 2. Fallback: Gunakan kemampuan internal Gemini tanpa tools eksternal
+    try:
+        print("🧠 Menjalankan riset berbasis basis pengetahuan internal Gemini...")
+        fallback_prompt = (
+            f"Berdasarkan pemahaman dan pengetahuan mendalam Anda:\n"
+            f"{prompt}\n\n"
+            f"Berikan fakta, analogi praktis, data realistis, dan langkah konkret untuk audiens Indonesia."
+        )
+        response = client.models.generate_content(
+            model=model,
+            contents=fallback_prompt,
+            config=types.GenerateContentConfig(
+                system_instruction="Anda adalah periset tren dan edukator finansial/konten Indonesia yang berwawasan luas."
+            )
+        )
+        fallback_text = getattr(response, "text", "")
+        if fallback_text and fallback_text.strip():
+            print("✅ Riset internal Gemini selesai digunakan.")
+            return fallback_text
+    except Exception as e:
+        print(f"⚠️ Gagal melakukan riset internal: {e}")
+
+    return "Berikan panduan edukasi aplikatif, angka realistis, dan langkah terstruktur yang relevan untuk audiens Indonesia."
 
 def generate_trending_script(niche: str, specific_title: Optional[str] = None) -> VideoProject:
     api_key = os.environ.get("GEMINI_API_KEY")
@@ -73,7 +97,7 @@ def generate_trending_script(niche: str, specific_title: Optional[str] = None) -
         raise RuntimeError("GEMINI_API_KEY belum disetel di .env.")
 
     client = genai.Client(api_key=api_key)
-    TARGET_MODEL = "gemini-3.6-flash"
+    TARGET_MODEL = "gemini-2.5-flash"
 
     past_topics = get_recent_topics(niche)
     blacklist_instruction = ""
@@ -89,12 +113,11 @@ def generate_trending_script(niche: str, specific_title: Optional[str] = None) -
         research_prompt = f"Cari 1 masalah atau tren viral ekonomi/finansial terbaru seputar {niche} di Indonesia. Maksimal 200 kata.{blacklist_instruction}"
 
     print(f"🔍 [1/2] Menelusuri informasi ({fokus_bahasan})...")
-    researched_info = _call_search_grounding(client, TARGET_MODEL, research_prompt)
-    if not researched_info:
-        researched_info = f"Topik bahasan {fokus_bahasan}. Berikan panduan edukasi aplikatif berbobot."
+    researched_info = _research_topic_with_fallback(client, TARGET_MODEL, research_prompt)
 
-    time.sleep(2)
+    time.sleep(1)
 
+    print("📝 [2/2] Merumuskan naskah JSON dan adegan...")
     formatting_prompt = f"""
     Referensi Riset:
     {researched_info[:1500]}
@@ -139,7 +162,7 @@ def generate_10_bulk_topics() -> list[TopicItem]:
     """Menghasilkan 10 ide topik acak lintas niche yang sedang tren dan anti-duplikasi."""
     api_key = os.environ.get("GEMINI_API_KEY")
     client = genai.Client(api_key=api_key)
-    TARGET_MODEL = "gemini-3.6-flash"
+    TARGET_MODEL = "gemini-2.5-flash"
 
     past_topics = get_recent_topics("all", limit=40)
     blacklist = "\n- ".join(past_topics) if past_topics else "Belum ada"
