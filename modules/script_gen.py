@@ -8,7 +8,7 @@ from pydantic import BaseModel, Field
 from config import GEMINI_API_KEYS
 from modules.db_manager import get_recent_topics, save_topic
 
-TARGET_MODEL = "gemini-2.5-flash"
+TARGET_MODEL = "gemini-3.6-flash"
 
 class Scene(BaseModel):
     scene_id: int
