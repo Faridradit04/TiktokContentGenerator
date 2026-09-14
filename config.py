@@ -18,7 +18,10 @@ DB_PATH = ASSETS_DIR / "history.db"
 for directory in [ASSETS_DIR, AUDIO_DIR, RAW_CLIPS_DIR, OUTPUT_DIR, BGM_DIR, UPLOADS_DIR]:
     directory.mkdir(parents=True, exist_ok=True)
 
-GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
+# Membaca format multi-key koma atau fallback ke format single key lama
+raw_keys = os.getenv("GEMINI_API_KEYS") or os.getenv("GEMINI_API_KEY") or ""
+GEMINI_API_KEYS = [k.strip() for k in raw_keys.split(",") if k.strip()]
+
 PEXELS_API_KEY = os.getenv("PEXELS_API_KEY")
 GDRIVE_FOLDER_ID = os.getenv("GDRIVE_FOLDER_ID")
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")

@@ -1,11 +1,14 @@
-import os
 import re
 import time
-from typing import Optional
+from typing import Optional, Callable, Any
 from google import genai
 from google.genai import types
 from pydantic import BaseModel, Field
+
+from config import GEMINI_API_KEYS
 from modules.db_manager import get_recent_topics, save_topic
+
+TARGET_MODEL = "gemini-2.5-flash"
 
 class Scene(BaseModel):
     scene_id: int
@@ -44,61 +47,77 @@ def _clean_json_string(raw_text: str) -> str:
     cleaned = re.sub(r"\s*```$", "", cleaned.strip())
     return cleaned.strip()
 
-def _research_topic_with_fallback(client: genai.Client, model: str, prompt: str) -> str:
-    """
-    Mencoba riset via Google Search Grounding terlebih dahulu.
-    Jika error / kuota habis, otomatis fallback ke internal knowledge Gemini.
-    """
-    # 1. Coba via Google Search Grounding
-    try:
-        print("🌐 Mencoba riset via Google Search Grounding...")
-        response = client.models.generate_content(
-            model=model,
+def _execute_with_key_rotation(operation: Callable[[genai.Client], Any]) -> Any:
+    """Mengeksekusi operasi API Gemini dengan rotasi kunci otomatis jika menemui limit (429)."""
+    if not GEMINI_API_KEYS:
+        raise RuntimeError("Variabel GEMINI_API_KEYS belum disetel di file .env.")
+
+    last_error = None
+    for idx, key in enumerate(GEMINI_API_KEYS):
+        try:
+            client = genai.Client(api_key=key)
+            return operation(client)
+        except Exception as e:
+            err_msg = str(e)
+            if "429" in err_msg or "RESOURCE_EXHAUSTED" in err_msg or "quota" in err_msg.lower():
+                print(f"⚠️ Kunci Akun #{idx + 1} terkena kuota limit. Beralih ke akun berikutnya...")
+                last_error = e
+                time.sleep(1)
+                continue
+            raise e
+
+    raise RuntimeError(f"Semua kuota API Key Gemini telah habis atau tidak dapat diakses: {last_error}")
+
+def _research_topic_with_fallback(prompt: str) -> str:
+    """Riset tren via Search Grounding dengan rotasi akun, fallback ke riset internal jika gagal."""
+    # 1. Coba Search Grounding
+    def _run_grounding(client: genai.Client):
+        return client.models.generate_content(
+            model=TARGET_MODEL,
             contents=prompt,
             config=types.GenerateContentConfig(
                 tools=[{"google_search": {}}],
                 system_instruction="Anda adalah periset tren terpercaya di Indonesia."
             )
         )
-        text_res = getattr(response, "text", "")
-        if text_res and text_res.strip():
-            print("✅ Berhasil mendapatkan referensi via Search Grounding.")
-            return text_res
-    except Exception as e:
-        print(f"⚠️ Search Grounding tidak tersedia ({e}). Mengalihkan ke riset internal Gemini...")
 
-    # 2. Fallback: Gunakan kemampuan internal Gemini tanpa tools eksternal
     try:
-        print("🧠 Menjalankan riset berbasis basis pengetahuan internal Gemini...")
+        print("🌐 Melakukan riset via Google Search Grounding...")
+        res = _execute_with_key_rotation(_run_grounding)
+        text_val = getattr(res, "text", "")
+        if text_val and text_val.strip():
+            print("✅ Data tren Search Grounding berhasil didapatkan.")
+            return text_val
+    except Exception as e:
+        print(f"⚠️ Search Grounding dilewati ({e}). Mengalihkan ke riset internal Gemini...")
+
+    # 2. Fallback: Riset Internal
+    def _run_internal(client: genai.Client):
         fallback_prompt = (
-            f"Berdasarkan pemahaman dan pengetahuan mendalam Anda:\n"
-            f"{prompt}\n\n"
-            f"Berikan fakta, analogi praktis, data realistis, dan langkah konkret untuk audiens Indonesia."
+            f"Berdasarkan wawasan mendalam Anda:\n{prompt}\n\n"
+            f"Berikan fakta konkret, data realistis, dan langkah terstruktur untuk audiens Indonesia."
         )
-        response = client.models.generate_content(
-            model=model,
+        return client.models.generate_content(
+            model=TARGET_MODEL,
             contents=fallback_prompt,
             config=types.GenerateContentConfig(
-                system_instruction="Anda adalah periset tren dan edukator finansial/konten Indonesia yang berwawasan luas."
+                system_instruction="Anda adalah periset tren dan edukator konten Indonesia yang berwawasan luas."
             )
         )
-        fallback_text = getattr(response, "text", "")
-        if fallback_text and fallback_text.strip():
-            print("✅ Riset internal Gemini selesai digunakan.")
-            return fallback_text
-    except Exception as e:
-        print(f"⚠️ Gagal melakukan riset internal: {e}")
 
-    return "Berikan panduan edukasi aplikatif, angka realistis, dan langkah terstruktur yang relevan untuk audiens Indonesia."
+    try:
+        print("🧠 Menjalankan riset berbasis basis pengetahuan internal Gemini...")
+        res_internal = _execute_with_key_rotation(_run_internal)
+        text_fallback = getattr(res_internal, "text", "")
+        if text_fallback and text_fallback.strip():
+            print("✅ Riset internal Gemini selesai.")
+            return text_fallback
+    except Exception as e:
+        print(f"⚠️ Riset internal gagal: {e}")
+
+    return "Berikan panduan edukasi aplikatif, data realistis, dan langkah terstruktur yang relevan untuk audiens Indonesia."
 
 def generate_trending_script(niche: str, specific_title: Optional[str] = None) -> VideoProject:
-    api_key = os.environ.get("GEMINI_API_KEY")
-    if not api_key:
-        raise RuntimeError("GEMINI_API_KEY belum disetel di .env.")
-
-    client = genai.Client(api_key=api_key)
-    TARGET_MODEL = "gemini-3.6-flash"
-
     past_topics = get_recent_topics(niche)
     blacklist_instruction = ""
     if past_topics:
@@ -113,7 +132,7 @@ def generate_trending_script(niche: str, specific_title: Optional[str] = None) -
         research_prompt = f"Cari 1 masalah atau tren viral ekonomi/finansial terbaru seputar {niche} di Indonesia. Maksimal 200 kata.{blacklist_instruction}"
 
     print(f"🔍 [1/2] Menelusuri informasi ({fokus_bahasan})...")
-    researched_info = _research_topic_with_fallback(client, TARGET_MODEL, research_prompt)
+    researched_info = _research_topic_with_fallback(research_prompt)
 
     time.sleep(1)
 
@@ -136,17 +155,20 @@ def generate_trending_script(niche: str, specific_title: Optional[str] = None) -
     5. ANGKA: Eja semua nominal angka penuh ('lima ratus ribu rupiah').
     """
 
-    response = client.models.generate_content(
-        model=TARGET_MODEL,
-        contents=formatting_prompt,
-        config=types.GenerateContentConfig(
-            response_mime_type="application/json",
-            response_schema=VideoProject,
-            max_output_tokens=4000,
-            temperature=0.7,
-            system_instruction="Anda adalah sutradara video pendek TikTok profesional. Hasilkan HANYA JSON valid."
+    def _generate_json(client: genai.Client):
+        return client.models.generate_content(
+            model=TARGET_MODEL,
+            contents=formatting_prompt,
+            config=types.GenerateContentConfig(
+                response_mime_type="application/json",
+                response_schema=VideoProject,
+                max_output_tokens=4000,
+                temperature=0.7,
+                system_instruction="Anda adalah sutradara video pendek TikTok profesional. Hasilkan HANYA JSON valid."
+            )
         )
-    )
+
+    response = _execute_with_key_rotation(_generate_json)
 
     parsed_obj = getattr(response, "parsed", None)
     if parsed_obj is not None:
@@ -159,11 +181,6 @@ def generate_trending_script(niche: str, specific_title: Optional[str] = None) -
     return proj
 
 def generate_10_bulk_topics() -> list[TopicItem]:
-    """Menghasilkan 10 ide topik acak lintas niche yang sedang tren dan anti-duplikasi."""
-    api_key = os.environ.get("GEMINI_API_KEY")
-    client = genai.Client(api_key=api_key)
-    TARGET_MODEL = "gemini-2.5-flash"
-
     past_topics = get_recent_topics("all", limit=40)
     blacklist = "\n- ".join(past_topics) if past_topics else "Belum ada"
 
@@ -177,16 +194,19 @@ def generate_10_bulk_topics() -> list[TopicItem]:
     Hasilkan tepat 10 judul yang memicu rasa penasaran, relevan dengan kehidupan anak muda Indonesia, dan praktis.
     """
 
-    response = client.models.generate_content(
-        model=TARGET_MODEL,
-        contents=prompt,
-        config=types.GenerateContentConfig(
-            response_mime_type="application/json",
-            response_schema=BulkTopics,
-            temperature=0.8,
-            system_instruction="Anda adalah creative director media sosial nomor satu."
+    def _call_bulk(client: genai.Client):
+        return client.models.generate_content(
+            model=TARGET_MODEL,
+            contents=prompt,
+            config=types.GenerateContentConfig(
+                response_mime_type="application/json",
+                response_schema=BulkTopics,
+                temperature=0.8,
+                system_instruction="Anda adalah creative director media sosial nomor satu."
+            )
         )
-    )
+
+    response = _execute_with_key_rotation(_call_bulk)
 
     parsed_obj = getattr(response, "parsed", None)
     if parsed_obj is not None:
