@@ -97,7 +97,7 @@ def generate_trending_script(niche: str, specific_title: Optional[str] = None) -
         raise RuntimeError("GEMINI_API_KEY belum disetel di .env.")
 
     client = genai.Client(api_key=api_key)
-    TARGET_MODEL = "gemini-2.5-flash"
+    TARGET_MODEL = "gemini-3.6-flash"
 
     past_topics = get_recent_topics(niche)
     blacklist_instruction = ""
