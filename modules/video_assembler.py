@@ -121,7 +121,6 @@ def create_subtitle_clip(narration_text: str, duration: float) -> ImageClip:
     draw = PIL.ImageDraw.Draw(img)
 
     font_sub = _get_system_font(font_size=34)
-    # Diperlebar agar teks merata horizontal
     wrapped_sub = "\n".join(textwrap.wrap(narration_text, width=46))
     y_pos = int(VIDEO_HEIGHT * 0.72)
 
@@ -141,35 +140,50 @@ def create_subtitle_clip(narration_text: str, duration: float) -> ImageClip:
 
 def generate_video_cover(first_media_path: str, headline_text: str, output_path: str) -> str:
     print("🖼️ Membuat gambar cover thumbnail...")
-    if first_media_path.lower().endswith((".jpg", ".jpeg", ".png", ".webp")):
-        base_img = PIL.Image.open(first_media_path).resize((VIDEO_WIDTH, VIDEO_HEIGHT)).convert("RGBA")
-    else:
-        raw_video = VideoFileClip(first_media_path)
-        vertical_video = format_clip_to_vertical(raw_video)
-        frame = vertical_video.get_frame(min(0.5, vertical_video.duration / 2))
-        base_img = PIL.Image.fromarray(frame).convert("RGBA")
+    raw_video = None
+    vertical_video = None
+    try:
+        if first_media_path.lower().endswith((".jpg", ".jpeg", ".png", ".webp")):
+            base_img = PIL.Image.open(first_media_path).resize((VIDEO_WIDTH, VIDEO_HEIGHT)).convert("RGBA")
+        else:
+            raw_video = VideoFileClip(first_media_path)
+            vertical_video = format_clip_to_vertical(raw_video)
+            frame = vertical_video.get_frame(min(0.5, vertical_video.duration / 2))
+            base_img = PIL.Image.fromarray(frame).convert("RGBA")
 
-    overlay = PIL.Image.new("RGBA", (VIDEO_WIDTH, VIDEO_HEIGHT), (0, 0, 0, 115))
-    combined = PIL.Image.alpha_composite(base_img, overlay)
-    draw = PIL.ImageDraw.Draw(combined)
+        overlay = PIL.Image.new("RGBA", (VIDEO_WIDTH, VIDEO_HEIGHT), (0, 0, 0, 115))
+        combined = PIL.Image.alpha_composite(base_img, overlay)
+        draw = PIL.ImageDraw.Draw(combined)
 
-    font = _get_system_font(font_size=74)
-    wrapped_headline = "\n".join(textwrap.wrap(headline_text.upper(), width=18))
+        font = _get_system_font(font_size=74)
+        wrapped_headline = "\n".join(textwrap.wrap(headline_text.upper(), width=18))
 
-    draw.multiline_text(
-        (VIDEO_WIDTH // 2, int(VIDEO_HEIGHT * 0.42)),
-        wrapped_headline,
-        font=font,
-        fill="#FFE600",
-        stroke_width=9,
-        stroke_fill="black",
-        anchor="mm",
-        align="center",
-        spacing=20
-    )
+        draw.multiline_text(
+            (VIDEO_WIDTH // 2, int(VIDEO_HEIGHT * 0.42)),
+            wrapped_headline,
+            font=font,
+            fill="#FFE600",
+            stroke_width=9,
+            stroke_fill="black",
+            anchor="mm",
+            align="center",
+            spacing=20
+        )
 
-    combined.convert("RGB").save(output_path, "JPEG", quality=95)
-    return output_path
+        combined.convert("RGB").save(output_path, "JPEG", quality=95)
+        return output_path
+    finally:
+        # Menutup file handle video jika dibuka
+        if vertical_video:
+            try:
+                vertical_video.close()
+            except Exception:
+                pass
+        if raw_video:
+            try:
+                raw_video.close()
+            except Exception:
+                pass
 
 def build_scene(media_path: str, audio_path: str, overlay_text: str, voiceover_text: str) -> CompositeVideoClip:
     audio = AudioFileClip(audio_path)
@@ -194,47 +208,67 @@ def build_scene(media_path: str, audio_path: str, overlay_text: str, voiceover_t
 
 def render_full_tiktok(processed_scenes: list, output_filename: str):
     scene_clips = []
+    final_video = None
+    bgm_raw = None
     print("🎞️ Merakit seluruh adegan video vertikal...")
 
-    for scene in processed_scenes:
-        media_path = scene.get("video_path")
-        audio_path = scene.get("audio_path")
-        if not media_path or not os.path.exists(media_path) or not audio_path or not os.path.exists(audio_path):
-            continue
+    try:
+        for scene in processed_scenes:
+            media_path = scene.get("video_path")
+            audio_path = scene.get("audio_path")
+            if not media_path or not os.path.exists(media_path) or not audio_path or not os.path.exists(audio_path):
+                continue
 
-        clip = build_scene(
-            media_path=media_path,
-            audio_path=audio_path,
-            overlay_text=scene.get("text_overlay", ""),
-            voiceover_text=scene.get("voiceover_text", "")
+            clip = build_scene(
+                media_path=media_path,
+                audio_path=audio_path,
+                overlay_text=scene.get("text_overlay", ""),
+                voiceover_text=scene.get("voiceover_text", "")
+            )
+            scene_clips.append(clip)
+
+        if not scene_clips:
+            raise RuntimeError("Tidak ada klip video yang valid untuk dirakit.")
+
+        final_video = concatenate_videoclips(scene_clips, method="compose")
+        total_duration = final_video.duration
+        print(f"⏱️ Total durasi: {round(total_duration, 1)} detik")
+
+        bgm_files = glob.glob(str(BGM_DIR / "*.mp3"))
+        if bgm_files:
+            chosen_bgm = random.choice(bgm_files)
+            try:
+                bgm_raw = AudioFileClip(chosen_bgm)
+                bgm_looped = audio_loop(bgm_raw, duration=total_duration)
+                bgm_quiet = volumex(bgm_looped, 0.12)
+                mixed_audio = CompositeAudioClip([final_video.audio, bgm_quiet])
+                final_video = final_video.set_audio(mixed_audio)
+            except Exception as e:
+                print(f"⚠️ BGM diabaikan: {e}")
+
+        final_video.write_videofile(
+            output_filename,
+            fps=FPS,
+            codec="libx264",
+            audio_codec="aac",
+            threads=4,
+            preset="ultrafast"
         )
-        scene_clips.append(clip)
-
-    if not scene_clips:
-        raise RuntimeError("Tidak ada klip video yang valid untuk dirakit.")
-
-    final_video = concatenate_videoclips(scene_clips, method="compose")
-    total_duration = final_video.duration
-    print(f"⏱️ Total durasi: {round(total_duration, 1)} detik")
-
-    bgm_files = glob.glob(str(BGM_DIR / "*.mp3"))
-    if bgm_files:
-        chosen_bgm = random.choice(bgm_files)
-        try:
-            bgm_raw = AudioFileClip(chosen_bgm)
-            bgm_looped = audio_loop(bgm_raw, duration=total_duration)
-            bgm_quiet = volumex(bgm_looped, 0.12)
-            mixed_audio = CompositeAudioClip([final_video.audio, bgm_quiet])
-            final_video = final_video.set_audio(mixed_audio)
-        except Exception as e:
-            print(f"⚠️ BGM diabaikan: {e}")
-
-    final_video.write_videofile(
-        output_filename,
-        fps=FPS,
-        codec="libx264",
-        audio_codec="aac",
-        threads=4,
-        preset="ultrafast"
-    )
-    print("✅ Render selesai!")
+        print("✅ Render selesai!")
+    finally:
+        # Tutup semua klip agar Windows melepaskan file lock
+        for clip in scene_clips:
+            try:
+                clip.close()
+            except Exception:
+                pass
+        if final_video:
+            try:
+                final_video.close()
+            except Exception:
+                pass
+        if bgm_raw:
+            try:
+                bgm_raw.close()
+            except Exception:
+                pass

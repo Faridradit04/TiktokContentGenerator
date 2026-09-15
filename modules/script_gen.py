@@ -8,7 +8,8 @@ from pydantic import BaseModel, Field
 from config import GEMINI_API_KEYS
 from modules.db_manager import get_recent_topics, save_topic
 
-TARGET_MODEL = "gemini-3.6-flash"
+PRIMARY_MODEL = "gemini-3.6-flash"
+FALLBACK_MODEL = "gemini-3.5-flash-lite"
 
 class Scene(BaseModel):
     scene_id: int
@@ -47,33 +48,47 @@ def _clean_json_string(raw_text: str) -> str:
     cleaned = re.sub(r"\s*```$", "", cleaned.strip())
     return cleaned.strip()
 
-def _execute_with_key_rotation(operation: Callable[[genai.Client], Any]) -> Any:
-    """Mengeksekusi operasi API Gemini dengan rotasi kunci otomatis jika menemui limit (429)."""
+def _execute_with_key_rotation(operation: Callable[[genai.Client, str], Any]) -> Any:
+    """Mengeksekusi operasi API Gemini dengan rotasi kunci, retry backoff untuk 503, dan fallback model."""
     if not GEMINI_API_KEYS:
         raise RuntimeError("Variabel GEMINI_API_KEYS belum disetel di file .env.")
 
+    models_to_try = [PRIMARY_MODEL, FALLBACK_MODEL]
     last_error = None
-    for idx, key in enumerate(GEMINI_API_KEYS):
-        try:
-            client = genai.Client(api_key=key)
-            return operation(client)
-        except Exception as e:
-            err_msg = str(e)
-            if "429" in err_msg or "RESOURCE_EXHAUSTED" in err_msg or "quota" in err_msg.lower():
-                print(f"⚠️ Kunci Akun #{idx + 1} terkena kuota limit. Beralih ke akun berikutnya...")
-                last_error = e
-                time.sleep(1)
-                continue
-            raise e
 
-    raise RuntimeError(f"Semua kuota API Key Gemini telah habis atau tidak dapat diakses: {last_error}")
+    for model_name in models_to_try:
+        for idx, key in enumerate(GEMINI_API_KEYS):
+            client = genai.Client(api_key=key)
+            # Coba retry hingga 3 kali untuk error server 503 / 500
+            for attempt in range(1, 4):
+                try:
+                    return operation(client, model_name)
+                except Exception as e:
+                    err_msg = str(e)
+                    last_error = e
+
+                    if "503" in err_msg or "UNAVAILABLE" in err_msg or "high demand" in err_msg.lower():
+                        sleep_time = attempt * 3
+                        print(f"⏳ Server Gemini sibuk (503) pada model {model_name} (Akun #{idx + 1}). Tunggu {sleep_time} detik...")
+                        time.sleep(sleep_time)
+                        continue
+
+                    if "429" in err_msg or "RESOURCE_EXHAUSTED" in err_msg or "quota" in err_msg.lower():
+                        print(f"⚠️ Kunci Akun #{idx + 1} limit kuota (429). Pindah ke akun berikutnya...")
+                        time.sleep(1)
+                        break
+
+                    # Jika error format schema atau argumen, jangan di-loop terus
+                    print(f"⚠️ Kesalahan API ({model_name}): {err_msg}")
+                    break
+
+    raise RuntimeError(f"Semua kuota dan percobaan model Gemini gagal. Galat terakhir: {last_error}")
 
 def _research_topic_with_fallback(prompt: str) -> str:
-    """Riset tren via Search Grounding dengan rotasi akun, fallback ke riset internal jika gagal."""
-    # 1. Coba Search Grounding
-    def _run_grounding(client: genai.Client):
+    """Riset tren via Search Grounding dengan fallback internal."""
+    def _run_grounding(client: genai.Client, model_name: str):
         return client.models.generate_content(
-            model=TARGET_MODEL,
+            model=model_name,
             contents=prompt,
             config=types.GenerateContentConfig(
                 tools=[{"google_search": {}}],
@@ -91,14 +106,13 @@ def _research_topic_with_fallback(prompt: str) -> str:
     except Exception as e:
         print(f"⚠️ Search Grounding dilewati ({e}). Mengalihkan ke riset internal Gemini...")
 
-    # 2. Fallback: Riset Internal
-    def _run_internal(client: genai.Client):
+    def _run_internal(client: genai.Client, model_name: str):
         fallback_prompt = (
             f"Berdasarkan wawasan mendalam Anda:\n{prompt}\n\n"
             f"Berikan fakta konkret, data realistis, dan langkah terstruktur untuk audiens Indonesia."
         )
         return client.models.generate_content(
-            model=TARGET_MODEL,
+            model=model_name,
             contents=fallback_prompt,
             config=types.GenerateContentConfig(
                 system_instruction="Anda adalah periset tren dan edukator konten Indonesia yang berwawasan luas."
@@ -155,9 +169,9 @@ def generate_trending_script(niche: str, specific_title: Optional[str] = None) -
     5. ANGKA: Eja semua nominal angka penuh ('lima ratus ribu rupiah').
     """
 
-    def _generate_json(client: genai.Client):
+    def _generate_json(client: genai.Client, model_name: str):
         return client.models.generate_content(
-            model=TARGET_MODEL,
+            model=model_name,
             contents=formatting_prompt,
             config=types.GenerateContentConfig(
                 response_mime_type="application/json",
@@ -194,9 +208,9 @@ def generate_10_bulk_topics() -> list[TopicItem]:
     Hasilkan tepat 10 judul yang memicu rasa penasaran, relevan dengan kehidupan anak muda Indonesia, dan praktis.
     """
 
-    def _call_bulk(client: genai.Client):
+    def _call_bulk(client: genai.Client, model_name: str):
         return client.models.generate_content(
-            model=TARGET_MODEL,
+            model=model_name,
             contents=prompt,
             config=types.GenerateContentConfig(
                 response_mime_type="application/json",

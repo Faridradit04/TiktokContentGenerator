@@ -9,7 +9,8 @@ import PIL.Image
 from config import GEMINI_API_KEYS
 from modules.db_manager import save_topic
 
-TARGET_MODEL = "gemini-2.5-flash"
+PRIMARY_MODEL = "gemini-3.6-flash"
+FALLBACK_MODEL = "gemini-3.5-flash-lite"
 
 class AffiliateScene(BaseModel):
     scene_id: int
@@ -41,25 +42,38 @@ def _clean_json_string(raw_text: str) -> str:
     cleaned = re.sub(r"\s*```$", "", cleaned.strip())
     return cleaned.strip()
 
-def _execute_with_key_rotation(operation: Callable[[genai.Client], Any]) -> Any:
+def _execute_with_key_rotation(operation: Callable[[genai.Client, str], Any]) -> Any:
     if not GEMINI_API_KEYS:
         raise RuntimeError("Variabel GEMINI_API_KEYS belum disetel di file .env.")
 
+    models_to_try = [PRIMARY_MODEL, FALLBACK_MODEL]
     last_error = None
-    for idx, key in enumerate(GEMINI_API_KEYS):
-        try:
-            client = genai.Client(api_key=key)
-            return operation(client)
-        except Exception as e:
-            err_msg = str(e)
-            if "429" in err_msg or "RESOURCE_EXHAUSTED" in err_msg or "quota" in err_msg.lower():
-                print(f"⚠️ Kunci Akun #{idx + 1} terkena kuota limit. Beralih ke akun berikutnya...")
-                last_error = e
-                time.sleep(1)
-                continue
-            raise e
 
-    raise RuntimeError(f"Semua kuota API Key Gemini telah habis: {last_error}")
+    for model_name in models_to_try:
+        for idx, key in enumerate(GEMINI_API_KEYS):
+            client = genai.Client(api_key=key)
+            for attempt in range(1, 4):
+                try:
+                    return operation(client, model_name)
+                except Exception as e:
+                    err_msg = str(e)
+                    last_error = e
+
+                    if "503" in err_msg or "UNAVAILABLE" in err_msg or "high demand" in err_msg.lower():
+                        sleep_time = attempt * 3
+                        print(f"⏳ Server Gemini sibuk (503) pada model {model_name} (Akun #{idx + 1}). Menunggu {sleep_time} detik...")
+                        time.sleep(sleep_time)
+                        continue
+
+                    if "429" in err_msg or "RESOURCE_EXHAUSTED" in err_msg or "quota" in err_msg.lower():
+                        print(f"⚠️ Kunci Akun #{idx + 1} terkena limit kuota. Beralih ke akun berikutnya...")
+                        time.sleep(1)
+                        break
+
+                    print(f"⚠️ Kesalahan Vision API ({model_name}): {err_msg}")
+                    break
+
+    raise RuntimeError(f"Semua percobaan API Gemini gagal: {last_error}")
 
 def generate_affiliate_script(media_path: str, product_desc: str) -> AffiliateProject:
     prompt = f"""
@@ -81,7 +95,7 @@ def generate_affiliate_script(media_path: str, product_desc: str) -> AffiliatePr
     - Berikan 3-5 stock_keywords bahasa Inggris yang relevan untuk setiap adegan.
     """
 
-    def _call_affiliate(client: genai.Client):
+    def _call_affiliate(client: genai.Client, model_name: str):
         contents = []
         if media_path.lower().endswith((".jpg", ".jpeg", ".png", ".webp")):
             img = PIL.Image.open(media_path)
@@ -92,7 +106,7 @@ def generate_affiliate_script(media_path: str, product_desc: str) -> AffiliatePr
         contents.append(prompt)
 
         return client.models.generate_content(
-            model=TARGET_MODEL,
+            model=model_name,
             contents=contents,
             config=types.GenerateContentConfig(
                 response_mime_type="application/json",
