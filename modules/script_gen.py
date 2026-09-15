@@ -1,6 +1,8 @@
 import re
 import time
+import random
 from typing import Optional, Callable, Any
+import feedparser
 from google import genai
 from google.genai import types
 from pydantic import BaseModel, Field
@@ -8,28 +10,50 @@ from pydantic import BaseModel, Field
 from config import GEMINI_API_KEYS
 from modules.db_manager import get_recent_topics, save_topic
 
-PRIMARY_MODEL = "gemini-3.6-flash"
-FALLBACK_MODEL = "gemini-3.5-flash-lite"
+PRIMARY_MODEL = "gemini-3-flash"
+FALLBACK_MODEL = "gemini-3.6-flash"
+
+# Kerangka sudut pandang kreatif non-klise
+CONTENT_ANGLES = [
+    {
+        "type": "STUDI_KASUS_BISNIS_SKANDAL",
+        "instruction": "Bedah 1 strategi brilian, kegagalan fatal, atau skandal rahasia dari sebuah perusahaan/tokoh terkenal dunia atau Indonesia. Jangan berikan tips umum, fokus pada kronologi peristiwa dan keputusan fatalnya."
+    },
+    {
+        "type": "PARADOKS_PSIKOLOGI_PERILAKU",
+        "instruction": "Bongkar 1 bias kognitif atau eksperimen psikologi nyata yang menjelaskan mengapa manusia sering mengambil keputusan bodoh tanpa sadar. Mulai dengan fenomena aneh sehari-hari."
+    },
+    {
+        "type": "FAKTA_GELAP_SEJARAH",
+        "instruction": "Angkat 1 peristiwa sejarah langka, manipulasi pasar, atau eksperimen sosial masa lalu yang jarang diketahui publik namun berdampak besar ke kehidupan modern."
+    },
+    {
+        "type": "SIMULASI_EXTREME_SCENARIO",
+        "instruction": "Lakukan simulasi 'Bagaimana jika...?' skenario ekstrem (misal: apa jadinya jika perbankan tumbang serentak, atau jika sebuah regulasi mendadak diubah). Jelaskan rantai efek domino yang terjadi secara realistis."
+    },
+    {
+        "type": "MITOS_VS_FAKTA_KONTROVERSIAL",
+        "instruction": "Tabrakkan dan hancurkan 1 mitos umum yang dipercaya 90 persen orang dengan data dan fakta mengejutkan yang berlawanan. Gunakan argumen berani dan to-the-point."
+    }
+]
 
 class Scene(BaseModel):
     scene_id: int
-    role: str = Field(description="hook, step_1, step_2, step_3, step_4, step_5, atau cta")
+    role: str = Field(description="hook, kronologi_1, kronologi_2, klimaks, plot_twist, pesan_inti, cta")
     voiceover_text: str = Field(
-        description="Narasi bahasa Indonesia santai, padat, dan to-the-point. Wajib eja angka secara kata penuh (contoh: 'sepuluh juta rupiah', bukan '10jt'). Hindari sapaan 'halo guys'. Kalimat pendek dengan tanda koma teratur."
+        description="Narasi bahasa Indonesia bergaya dokumenter/storytelling cepat. Jangan ada sapaan 'halo guys' atau 'tahukah kamu'. Eja angka secara kata penuh ('dua puluh lima persen'). Padat, memicu penasaran."
     )
-    visual_prompt: str = Field(description="Deskripsi visual adegan aksi nyata 9:16")
+    visual_prompt: str = Field(description="Deskripsi visual aksi nyata vertikal 9:16")
     stock_keywords: list[str] = Field(
-        description="Daftar 3-5 variasi keyword bahasa Inggris yang sinkron dengan judul konten dan aksi manusia nyata (contoh: ['worried man checking phone screen', 'counting cash money rupiah', 'typing laptop night'])."
+        description="3-5 keyword aksi Pexels bahasa Inggris yang relevan dengan jalan cerita adegan ini."
     )
-    text_overlay: str = Field(
-        description="Punchline teks kapital maksimal 3-4 kata (contoh: '1. STOP PINJOL', '2. AUTO DEBET')"
-    )
+    text_overlay: str = Field(description="Headline teks kapital provokatif maksimal 3-4 kata.")
 
 class VideoMetadata(BaseModel):
-    tiktok_caption: str = Field(description="Caption TikTok menarik yang memicu rasa penasaran")
-    hashtags: list[str] = Field(description="5 hashtag relevan")
-    source_topic: str = Field(description="Isu atau judul inti topik")
-    cover_headline: str = Field(description="Headline cover thumbnail provokatif (maksimal 5 kata kapital)")
+    tiktok_caption: str = Field(description="Caption TikTok misterius/memicu debat dengan hashtag relevan")
+    hashtags: list[str] = Field(description="5 hashtag tren")
+    source_topic: str = Field(description="Judul cerita/peristiwa inti")
+    cover_headline: str = Field(description="Headline thumbnail kontroversial maksimal 5 kata kapital")
 
 class VideoProject(BaseModel):
     project_title: str
@@ -37,8 +61,8 @@ class VideoProject(BaseModel):
     scenes: list[Scene]
 
 class TopicItem(BaseModel):
-    niche: str = Field(description="Niche bahasan (contoh: Finansial, Karir, Psikologi, AI & Tools, Bisnis)")
-    title: str = Field(description="Judul konten TikTok yang sangat menarik dan viral")
+    niche: str = Field(description="Kategori bahasan")
+    title: str = Field(description="Judul cerita/konsep konten yang menggugah rasa penasaran")
 
 class BulkTopics(BaseModel):
     topics: list[TopicItem]
@@ -48,18 +72,26 @@ def _clean_json_string(raw_text: str) -> str:
     cleaned = re.sub(r"\s*```$", "", cleaned.strip())
     return cleaned.strip()
 
+def _get_google_trends_headlines() -> list[str]:
+    """Mengambil 5 berita tren terhangat hari ini via Google Trends RSS Indonesia."""
+    try:
+        feed = feedparser.parse("https://trends.google.com/trending/rss?geo=ID")
+        headlines = [entry.title for entry in feed.entries[:5]]
+        return headlines
+    except Exception as e:
+        print(f"⚠️ RSS Google Trends dilewati: {e}")
+        return []
+
 def _execute_with_key_rotation(operation: Callable[[genai.Client, str], Any]) -> Any:
-    """Mengeksekusi operasi API Gemini dengan rotasi kunci, retry backoff untuk 503, dan fallback model."""
     if not GEMINI_API_KEYS:
         raise RuntimeError("Variabel GEMINI_API_KEYS belum disetel di file .env.")
 
-    models_to_try = [PRIMARY_MODEL, FALLBACK_MODEL]
+    models_to_try = [PRIMARY_MODEL, FALLBACK_MODEL, "gemini-2.5-flash"]
     last_error = None
 
     for model_name in models_to_try:
         for idx, key in enumerate(GEMINI_API_KEYS):
             client = genai.Client(api_key=key)
-            # Coba retry hingga 3 kali untuk error server 503 / 500
             for attempt in range(1, 4):
                 try:
                     return operation(client, model_name)
@@ -69,104 +101,129 @@ def _execute_with_key_rotation(operation: Callable[[genai.Client, str], Any]) ->
 
                     if "503" in err_msg or "UNAVAILABLE" in err_msg or "high demand" in err_msg.lower():
                         sleep_time = attempt * 3
-                        print(f"⏳ Server Gemini sibuk (503) pada model {model_name} (Akun #{idx + 1}). Tunggu {sleep_time} detik...")
+                        print(f"⏳ Server Gemini sibuk (503) pada model {model_name}. Menunggu {sleep_time} detik...")
                         time.sleep(sleep_time)
                         continue
 
                     if "429" in err_msg or "RESOURCE_EXHAUSTED" in err_msg or "quota" in err_msg.lower():
-                        print(f"⚠️ Kunci Akun #{idx + 1} limit kuota (429). Pindah ke akun berikutnya...")
+                        print(f"⚠️ Akun Gemini #{idx + 1} limit (429). Pindah akun...")
                         time.sleep(1)
                         break
 
-                    # Jika error format schema atau argumen, jangan di-loop terus
+                    if "404" in err_msg or "NOT_FOUND" in err_msg:
+                        print(f"⚠️ Model {model_name} tidak ditemukan (404). Beralih ke model berikutnya...")
+                        break
+
                     print(f"⚠️ Kesalahan API ({model_name}): {err_msg}")
                     break
 
-    raise RuntimeError(f"Semua kuota dan percobaan model Gemini gagal. Galat terakhir: {last_error}")
+    raise RuntimeError(f"Semua kuota atau percobaan model Gemini gagal: {last_error}")
 
 def _research_topic_with_fallback(prompt: str) -> str:
-    """Riset tren via Search Grounding dengan fallback internal."""
+    """Riset komprehensif via Search Grounding dengan fallback internal."""
     def _run_grounding(client: genai.Client, model_name: str):
         return client.models.generate_content(
             model=model_name,
             contents=prompt,
             config=types.GenerateContentConfig(
                 tools=[{"google_search": {}}],
-                system_instruction="Anda adalah periset tren terpercaya di Indonesia."
+                system_instruction="Anda adalah jurnalis investigasi dan kurator cerita viral yang mengutamakan data konkret."
             )
         )
 
     try:
-        print("🌐 Melakukan riset via Google Search Grounding...")
+        print("🌐 Meriset materi faktual via Google Search Grounding...")
         res = _execute_with_key_rotation(_run_grounding)
         text_val = getattr(res, "text", "")
         if text_val and text_val.strip():
-            print("✅ Data tren Search Grounding berhasil didapatkan.")
+            print("✅ Data riset berhasil ditemukan.")
             return text_val
     except Exception as e:
-        print(f"⚠️ Search Grounding dilewati ({e}). Mengalihkan ke riset internal Gemini...")
+        print(f"⚠️ Search Grounding dilewati ({e}). Mengalihkan ke riset internal...")
 
     def _run_internal(client: genai.Client, model_name: str):
         fallback_prompt = (
-            f"Berdasarkan wawasan mendalam Anda:\n{prompt}\n\n"
-            f"Berikan fakta konkret, data realistis, dan langkah terstruktur untuk audiens Indonesia."
+            f"Berdasarkan wawasan investigatif mendalam Anda:\n{prompt}\n\n"
+            f"Berikan fakta konkret peristiwa, nama entitas, tahun kejadian, dan alur sebab-akibat."
         )
         return client.models.generate_content(
             model=model_name,
             contents=fallback_prompt,
             config=types.GenerateContentConfig(
-                system_instruction="Anda adalah periset tren dan edukator konten Indonesia yang berwawasan luas."
+                system_instruction="Anda adalah periset storytelling dan sutradara video pendek."
             )
         )
 
     try:
-        print("🧠 Menjalankan riset berbasis basis pengetahuan internal Gemini...")
         res_internal = _execute_with_key_rotation(_run_internal)
         text_fallback = getattr(res_internal, "text", "")
         if text_fallback and text_fallback.strip():
-            print("✅ Riset internal Gemini selesai.")
             return text_fallback
     except Exception as e:
         print(f"⚠️ Riset internal gagal: {e}")
 
-    return "Berikan panduan edukasi aplikatif, data realistis, dan langkah terstruktur yang relevan untuk audiens Indonesia."
+    return "Fokuskan pada kronologi peristiwa nyata, data angka mengejutkan, dan dampak langsungnya bagi kehidupan masyarakat."
 
 def generate_trending_script(niche: str, specific_title: Optional[str] = None) -> VideoProject:
     past_topics = get_recent_topics(niche)
     blacklist_instruction = ""
     if past_topics:
         past_list_str = "\n- ".join(past_topics)
-        blacklist_instruction = f"\nJANGAN MEMBUAT TOPIK YANG SAMA ATAU MIRIP DENGAN DAFTAR INI:\n- {past_list_str}\n"
+        blacklist_instruction = (
+            f"\nDILARANG MEMBAHAS TOPIK YANG SUDAH PERNAH DIBUAT BERIKUT INI:\n- {past_list_str}\n"
+        )
+
+    # Injeksi tren aktual via Google Trends jika pengguna memilih mode otomatis
+    trending_context = ""
+    if not specific_title:
+        live_trends = _get_google_trends_headlines()
+        if live_trends:
+            trending_context = f"\nISU HANGAT HARI INI DI INDONESIA (Bisa dijadikan inspirasi jika relevan): {', '.join(live_trends)}"
+
+    # Pilih 1 sudut pandang kreatif secara acak
+    chosen_angle = random.choice(CONTENT_ANGLES)
+    print(f"🎭 [Konsep Terpilih]: {chosen_angle['type']}")
 
     if specific_title and specific_title.strip():
-        fokus_bahasan = f"Niche: '{niche}', Topik: '{specific_title.strip()}'"
-        research_prompt = f"Cari panduan praktis dan angka nyata seputar: '{specific_title}' di niche {niche} Indonesia. Maksimal 200 kata.{blacklist_instruction}"
+        research_prompt = f"""
+        Riset mendalam mengenai: '{specific_title.strip()}' dalam kategori {niche}.
+        Instruksi Sudut Pandang: {chosen_angle['instruction']}
+        Cari nama aktor/pelaku, angka kerugian/keuntungan, dan peristiwa kunci. Maksimal 250 kata.
+        {blacklist_instruction}
+        """
     else:
-        fokus_bahasan = f"Niche: '{niche}'"
-        research_prompt = f"Cari 1 masalah atau tren viral ekonomi/finansial terbaru seputar {niche} di Indonesia. Maksimal 200 kata.{blacklist_instruction}"
+        research_prompt = f"""
+        Temukan 1 studi kasus, fakta gelap, atau fenomena nyata yang mengejutkan tentang {niche}.
+        Instruksi Sudut Pandang: {chosen_angle['instruction']}
+        {trending_context}
+        DILARANG membuat tips menabung, gaji UMR, atau nasihat motivasi klise. 
+        Maksimal 250 kata.
+        {blacklist_instruction}
+        """
 
-    print(f"🔍 [1/2] Menelusuri informasi ({fokus_bahasan})...")
+    print("🔍 [1/2] Menelusuri fakta peristiwa nyata...")
     researched_info = _research_topic_with_fallback(research_prompt)
 
     time.sleep(1)
 
-    print("📝 [2/2] Merumuskan naskah JSON dan adegan...")
+    print("📝 [2/2] Merakit naskah storytelling dramatis...")
     formatting_prompt = f"""
-    Referensi Riset:
-    {researched_info[:1500]}
+    Referensi Fakta:
+    {researched_info[:1600]}
 
-    Target Konten:
-    - Niche: {niche}
-    - Judul Fokus: {specific_title if specific_title else 'Topik Baru Bebas Duplikasi'}
+    Format Naskah: {chosen_angle['type']}
+    Niche: {niche}
+    Fokus Pembahasan: {specific_title if specific_title else 'Cerita/Fakta Baru'}
     {blacklist_instruction}
 
-    TUGAS:
-    Susun naskah video TikTok dengan durasi MINIMAL 60 DETIK (6-7 adegan).
-    1. HOOK (Scene 1): Menusuk masalah nyata tanpa sapaan 'halo guys'.
-    2. ISI (Scene 2 s/d 5): 25-35 kata narasi per adegan berisi langkah konkret.
-    3. CTA (Scene Terakhir): Pertanyaan pemantik debat di kolom komentar.
-    4. KEYWORDS PEXELS: Pada setiap adegan, berikan 3-5 keyword bahasa Inggris yang sinkron dengan judul konten ({specific_title or niche}) dan berupa aksi manusia nyata.
-    5. ANGKA: Eja semua nominal angka penuh ('lima ratus ribu rupiah').
+    ATURAN PENULISAN:
+    1. Durasi video MINIMAL 60 DETIK (buat 6-7 adegan, masing-masing 25-30 kata).
+    2. Scene 1 (HOOK): Wajib membuka dengan misteri atau fakta mencengangkan tanpa basa-basi (DILARANG pakai 'halo guys' atau 'tahukah kamu').
+    3. Scene 2-4 (KRONOLOGI & ESKALASI): Ungkap detail peristiwa dan mengapa hal itu terjadi.
+    4. Scene 5-6 (PLOT TWIST/DAMPAK): Tunjukkan fakta yang jarang diketahui orang.
+    5. Scene Terakhir (CTA): Berikan pertanyaan reflektif yang memicu perdebatan di kolom komentar.
+    6. ANGKA: Semua angka/tahun wajib dieja kata penuh ('tahun dua ribu dua puluh empat').
+    7. KEYWORDS PEXELS: 3-5 keyword bahasa Inggris aksi nyata yang sinkron dengan adegan.
     """
 
     def _generate_json(client: genai.Client, model_name: str):
@@ -177,8 +234,8 @@ def generate_trending_script(niche: str, specific_title: Optional[str] = None) -
                 response_mime_type="application/json",
                 response_schema=VideoProject,
                 max_output_tokens=4000,
-                temperature=0.7,
-                system_instruction="Anda adalah sutradara video pendek TikTok profesional. Hasilkan HANYA JSON valid."
+                temperature=0.75,
+                system_instruction="Anda adalah sutradara video pendek storytelling dan dokumenter investigasi top dunia."
             )
         )
 
@@ -195,17 +252,28 @@ def generate_trending_script(niche: str, specific_title: Optional[str] = None) -
     return proj
 
 def generate_10_bulk_topics() -> list[TopicItem]:
-    past_topics = get_recent_topics("all", limit=40)
+    past_topics = get_recent_topics("all", limit=50)
     blacklist = "\n- ".join(past_topics) if past_topics else "Belum ada"
+    live_trends = _get_google_trends_headlines()
+    trends_str = ", ".join(live_trends) if live_trends else "Isu tren umum"
 
     prompt = f"""
-    Riset 10 topik video TikTok edukasi/informasi yang sangat berpotensi FYP di Indonesia saat ini.
-    Kombinasikan dari beragam niche populer: Finansial Pribadi, Psikologi & Mindset, Tips Karir/Kerja, AI & Tools Produktivitas, dan Bisnis/Side Hustle.
+    Buat 10 konsep judul video TikTok storytelling & investigasi yang sangat memicu rasa ingin tahu (curiosity loop).
     
-    DAFTAR TOPIK YANG SUDAH PERNAH DIBUAT (DILARANG MENGULANG):
-    - {blacklist}
+    TREN SAAT INI DI INDONESIA:
+    {trends_str}
 
-    Hasilkan tepat 10 judul yang memicu rasa penasaran, relevan dengan kehidupan anak muda Indonesia, dan praktis.
+    KOMBINASIKAN DARI BERAGAM SUDUT PANDANG KREATIF:
+    - Studi kasus keruntuhan merek besar / skandal korporasi
+    - Paradoks psikologi dan bias pikiran manusia
+    - Rahasia sejarah gelap industri tertentu
+    - Skenario simulasi ekstrem ekonomi/sosial
+    - Mitos umum masyarakat yang dibongkar secara brutal
+
+    DILARANG membuat judul tips klise (seperti 'cara menabung gaji UMR', '5 buku wajib dibaca', dll).
+    
+    DAFTAR TOPIK YANG SUDAH PERNAH DIBUAT (DILARANG DIULANG):
+    - {blacklist}
     """
 
     def _call_bulk(client: genai.Client, model_name: str):
@@ -215,8 +283,8 @@ def generate_10_bulk_topics() -> list[TopicItem]:
             config=types.GenerateContentConfig(
                 response_mime_type="application/json",
                 response_schema=BulkTopics,
-                temperature=0.8,
-                system_instruction="Anda adalah creative director media sosial nomor satu."
+                temperature=0.85,
+                system_instruction="Anda adalah creative strategist media sosial viral nomor satu."
             )
         )
 
