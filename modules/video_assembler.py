@@ -24,7 +24,9 @@ from moviepy.audio.fx.all import audio_loop, volumex
 from config import VIDEO_WIDTH, VIDEO_HEIGHT, FPS, BGM_DIR
 from modules.jamendo_fetcher import fetch_jamendo_bgm
 
+
 def format_clip_to_vertical(clip: VideoFileClip) -> VideoFileClip:
+    """Mengubah klip menjadi rasio 9:16 vertikal tanpa distorsi."""
     target_ratio = VIDEO_WIDTH / VIDEO_HEIGHT
     clip_ratio = clip.w / clip.h
 
@@ -47,7 +49,9 @@ def format_clip_to_vertical(clip: VideoFileClip) -> VideoFileClip:
             y2=y_center + (VIDEO_HEIGHT / 2)
         )
 
+
 def process_product_image_to_vertical(image_path: str) -> str:
+    """Mengubah gambar statis produk menjadi layout vertikal dengan background blur."""
     out_path = f"{os.path.splitext(image_path)[0]}_vertical.png"
     if os.path.exists(out_path):
         return out_path
@@ -64,7 +68,9 @@ def process_product_image_to_vertical(image_path: str) -> str:
     bg.save(out_path)
     return out_path
 
+
 def _get_system_font(font_size: int):
+    """Mencari font sistem yang tersedia di Linux atau Windows."""
     system_fonts = [
         "DejaVuSans-Bold.ttf",
         "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
@@ -78,7 +84,9 @@ def _get_system_font(font_size: int):
             continue
     return PIL.ImageFont.load_default()
 
+
 def create_text_overlay_clip(text: str, duration: float) -> ImageClip:
+    """Membuat teks headline statis provokatif di area atas/tengah video."""
     if not text:
         return None
     img = PIL.Image.new("RGBA", (VIDEO_WIDTH, VIDEO_HEIGHT), (0, 0, 0, 0))
@@ -101,7 +109,9 @@ def create_text_overlay_clip(text: str, duration: float) -> ImageClip:
     )
     return ImageClip(np.array(img), ismask=False, transparent=True).set_duration(duration)
 
+
 def create_chunked_subtitle_clips(narration_text: str, total_duration: float) -> list:
+    """Memotong narasi menjadi 3-4 kata per tampilan subtitle yang aman dari UI TikTok."""
     words = narration_text.strip().split()
     if not words:
         return []
@@ -141,7 +151,9 @@ def create_chunked_subtitle_clips(narration_text: str, total_duration: float) ->
 
     return sub_clips
 
+
 def build_scene_ultralight(media_path: str, audio_path: str, overlay_text: str, voiceover_text: str) -> CompositeVideoClip:
+    """Merakit 1 adegan dengan pemakaian buffer memori yang sangat minim."""
     audio = AudioFileClip(audio_path)
     duration = audio.duration
 
@@ -157,7 +169,7 @@ def build_scene_ultralight(media_path: str, audio_path: str, overlay_text: str, 
             base_video = v_clip.subclip(0, duration)
 
     elements = [base_video]
-    
+
     txt_clip = create_text_overlay_clip(overlay_text, duration)
     if txt_clip:
         elements.append(txt_clip)
@@ -167,8 +179,10 @@ def build_scene_ultralight(media_path: str, audio_path: str, overlay_text: str, 
 
     return CompositeVideoClip(elements, size=(VIDEO_WIDTH, VIDEO_HEIGHT)).set_audio(audio)
 
+
 def generate_video_cover(first_media_path: str, headline_text: str, output_path: str) -> str:
-    print("🖼️ Membuat gambar cover thumbnail...")
+    """Membuat cover/thumbnail vertikal dengan teks hook tajam."""
+    print("🖼️ Membuat thumbnail video...")
     raw_video = None
     vertical_video = None
     try:
@@ -208,7 +222,9 @@ def generate_video_cover(first_media_path: str, headline_text: str, output_path:
             try: raw_video.close()
             except Exception: pass
 
+
 def render_full_tiktok(processed_scenes: list, output_filename: str, niche: str = "education"):
+    """Merakit seluruh adegan, menyatukan audio BGM Jamendo, dan merender video akhir."""
     scene_clips = []
     final_video = None
     bgm_clip = None
@@ -237,6 +253,7 @@ def render_full_tiktok(processed_scenes: list, output_filename: str, niche: str 
         total_duration = final_video.duration
         print(f"⏱️ Total durasi: {round(total_duration, 1)} detik")
 
+        # Ambil musik latar dari Jamendo sesuai tema konten
         jamendo_track = fetch_jamendo_bgm(niche=niche)
         if jamendo_track and os.path.exists(jamendo_track):
             try:
@@ -249,7 +266,7 @@ def render_full_tiktok(processed_scenes: list, output_filename: str, niche: str 
             except Exception as e:
                 print(f"⚠️ Gagal mixing BGM: {e}")
 
-        # Render dengan batasan buffer FFmpeg ketat
+        # Render dengan pembatasan buffer memori FFmpeg agar tidak terkena OOM
         final_video.write_videofile(
             output_filename,
             fps=FPS,
@@ -257,7 +274,12 @@ def render_full_tiktok(processed_scenes: list, output_filename: str, niche: str 
             audio_codec="aac",
             threads=1,
             preset="ultrafast",
-            ffmpeg_params=["-crf", "26", "-maxrate", "2500k", "-bufsize", "5000k"]
+            ffmpeg_params=[
+                "-crf", "28",
+                "-maxrate", "1800k",
+                "-bufsize", "3000k",
+                "-pix_fmt", "yuv420p"
+            ]
         )
         print("✅ Render selesai tanpa OOM!")
     finally:
