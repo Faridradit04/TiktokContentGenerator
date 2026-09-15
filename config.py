@@ -27,9 +27,9 @@ GDRIVE_FOLDER_ID = os.getenv("GDRIVE_FOLDER_ID")
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 ALLOWED_TELEGRAM_USER_ID = os.getenv("ALLOWED_TELEGRAM_USER_ID")
 JAMENDO_CLIENT_ID = os.getenv("JAMENDO_CLIENT_ID", "")
-VIDEO_WIDTH = 1080
-VIDEO_HEIGHT = 1920
-FPS = 30
+VIDEO_WIDTH = 720
+VIDEO_HEIGHT = 1280
+FPS = 25
 
 def slugify_filename(text: str, max_length: int = 50) -> str:
     if not text:

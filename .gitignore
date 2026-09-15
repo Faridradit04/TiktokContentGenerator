@@ -9,4 +9,4 @@ assets/raw_clips/*
 assets/audio/*
 assets/uploads/*
 assets/history.db
-!assets/bgm/
+assets/bgm/
