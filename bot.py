@@ -54,7 +54,7 @@ def make_progress_card(step_num: int, title: str, detail: str) -> str:
         ("1", "Riset Tren & Naskah JSON"),
         ("2", "Sintesis Suara Narasi (Edge-TTS)"),
         ("3", "Kurasi Klip Vertikal HD (Pexels)"),
-        ("4", "Perakitan & Render Video (MoviePy)"),
+        ("4", "Perakitan & Render Video (MoviePy + BGM Jamendo)"),
         ("5", "Upload Berkas ke Google Drive"),
     ]
 
@@ -209,7 +209,7 @@ async def execute_single_video(status_msg, niche: str, specific_title: str = Non
                 created_temp_files.append(sc["video_path"])
 
         await status_msg.edit_text(
-            make_progress_card(4, topic_title, "Menggabungkan klip, subtitle, zoom dinamis, dan BGM..."),
+            make_progress_card(4, topic_title, "Menggabungkan klip, subtitle, zoom dinamis, dan BGM Jamendo..."),
             parse_mode="Markdown"
         )
         out_video = OUTPUT_DIR / f"{slug}.mp4"
@@ -218,7 +218,11 @@ async def execute_single_video(status_msg, niche: str, specific_title: str = Non
         created_temp_files.extend([str(out_video), str(out_cover), str(out_meta)])
 
         loop = asyncio.get_running_loop()
-        await loop.run_in_executor(None, render_full_tiktok, scenes_ready, str(out_video))
+        # Mengoper parameter niche ke fungsi render video
+        await loop.run_in_executor(
+            None, 
+            lambda: render_full_tiktok(scenes_ready, str(out_video), niche=niche)
+        )
         if scenes_ready[0].get("video_path"):
             await loop.run_in_executor(
                 None,
@@ -298,7 +302,7 @@ async def execute_affiliate_video(status_msg, media_path: str, desc: str):
                 created_temp_files.append(sc["video_path"])
 
         await status_msg.edit_text(
-            make_progress_card(4, topic_title, "Merakit video vertikal 9:16 dan penawaran..."),
+            make_progress_card(4, topic_title, "Merakit video vertikal 9:16 dan musik promo..."),
             parse_mode="Markdown"
         )
         out_video = OUTPUT_DIR / f"{slug}.mp4"
@@ -307,7 +311,11 @@ async def execute_affiliate_video(status_msg, media_path: str, desc: str):
         created_temp_files.extend([str(out_video), str(out_cover), str(out_meta)])
 
         loop = asyncio.get_running_loop()
-        await loop.run_in_executor(None, render_full_tiktok, scenes_ready, str(out_video))
+        # Mengoper niche 'affiliate' ke fungsi render video
+        await loop.run_in_executor(
+            None, 
+            lambda: render_full_tiktok(scenes_ready, str(out_video), niche="affiliate")
+        )
         await loop.run_in_executor(
             None,
             generate_video_cover,
