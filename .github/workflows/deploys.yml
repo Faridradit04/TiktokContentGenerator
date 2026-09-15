@@ -1,24 +1,34 @@
-name: Auto Deploy to VPS
+name: Deploy to VPS
 
 on:
   push:
     branches:
-      - master
+      - master  # Atau 'main' jika branch utama kamu main
 
 jobs:
   deploy:
     runs-on: ubuntu-latest
+
     steps:
-      - name: Eksekusi Deploy via SSH
+      - name: Deploy via SSH
         uses: appleboy/ssh-action@v1.0.3
         with:
-          host: ${{ secrets.HOST }}
-          username: ${{ secrets.USERNAME }}
-          key: ${{ secrets.SSH_KEY }}
-          port: 22
+          host: ${{ secrets.VPS_HOST }}
+          username: ${{ secrets.VPS_USER }}
+          key: ${{ secrets.VPS_SSH_KEY }}
+          port: ${{ secrets.VPS_PORT }}
           script: |
-            cd /root/tiktok-bot
+            # Pindah ke direktori milik user ubuntu
+            cd /home/ubuntu/tiktok-bot
+
+            # Tarik kode terbaru
             git pull origin master
+
+            # Aktifkan virtual environment dan update dependensi
             source venv/bin/activate
-            pip install -r requirements.txt --quiet
+            if [ -f requirements.txt ]; then
+              pip install -r requirements.txt --quiet
+            fi
+
+            # Restart service
             sudo systemctl restart tiktok-bot
